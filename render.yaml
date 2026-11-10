@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: commonplace
+    runtime: node
+    plan: 0.5c-512mb
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npm run migrate
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: commonplace-db
+          property: connectionString
+      - key: ADMIN_EMAIL
+        sync: false
+      # Sign in with this the first time. Find it under the service's Environment tab.
+      - key: ADMIN_TOKEN
+        generateValue: true
+      # Optional: a Slack incoming webhook that receives every owner ping.
+      - key: NOTIFY_WEBHOOK_URL
+        sync: false
+
+databases:
+  - name: commonplace-db
+    plan: 0.1c-256mb
+    postgresMajorVersion: "17"
+    # Private network only. The web service connects over the internal URL.
+    ipAllowList: []
