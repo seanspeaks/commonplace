@@ -20,7 +20,7 @@ A running log of what helped and what got in the way while building this. Everyt
 
 4. **`preDeployCommand` is paid-only.** On a free instance migrations have to run at boot. I run them in both places. A note in the Blueprint spec next to the field would help people deploying a template on the free tier.
 
-5. **MCP auth beyond bearer tokens.** The templates use bearer tokens and the guide says to put OAuth 2.1 in front of production clients, ideally through a managed IdP. For a team tool that wants to show up as a Claude.ai connector without adding another vendor, an example authorization server backed by Render Postgres (with dynamic client registration) would close the gap. It's next on this project's roadmap.
+5. **MCP auth beyond bearer tokens.** The templates use bearer tokens and the guide says to put OAuth 2.1 in front of production clients, ideally through a managed IdP. For a team tool that wants to show up as a Claude.ai connector without adding another vendor, an example authorization server backed by Render Postgres (with dynamic client registration) would close the gap. Commonplace now has one (see "Adding OAuth" below).
 
 ### To check
 
@@ -40,3 +40,18 @@ A running log of what helped and what got in the way while building this. Everyt
 6. **A blank `sync: false` var deploys anyway.** I left `ADMIN_EMAIL` empty on the Blueprint screen and everything went green, but the app couldn't create its first admin, so nobody could sign in. The only sign was a log line. There's no way in the spec to mark a `sync: false` value as required. Something like `required: true` would catch it before the first deploy. On my side, the sign-in page should say so too.
 
 7. **A quick second push shows up as "canceled".** I pushed twice within a few seconds, and the first deploy shows as canceled in the dashboard, which looked like a failure at first. It's the right behavior, but saying it was "superseded by a newer commit" would read less like an error.
+
+## Adding OAuth
+
+Optional MCP auth, on with `OAUTH_ENABLED=true`. It's the MCP SDK's auth router plus about 300 lines that keep clients, codes and tokens in the same Postgres, so no IdP to sign up for. Approved connections are agent tokens with a ceiling picked on the consent page, so they show up under Settings next to everything else.
+
+- [x] Discovery live: the 401 points at protected resource metadata, which points at the authorization server metadata
+- [x] Dynamic client registration, authorize, consent behind sign-in
+- [x] Existing bearer tokens unaffected (17 tools over the same endpoint)
+- [ ] Full sign-in from Claude.ai and ChatGPT custom connectors
+
+### Worked well
+
+8. **`RENDER_EXTERNAL_URL` is already https.** OAuth issuers have to be https, and the SDK refuses to start otherwise. On Render the issuer came for free with no custom domain and no `PUBLIC_URL` to set, which is a nice thing to point out in the MCP hosting guide.
+
+9. **Blueprint sync picked up a new env var on push.** I added `OAUTH_ENABLED: "true"` to `render.yaml` on a running service and pushed. The sync added the var and the deploy that followed came up with OAuth on, no dashboard step. I didn't expect it to. If the Blueprint docs don't spell it out, they should, since it's how a template ships a new feature flag to everyone who already deployed it.
