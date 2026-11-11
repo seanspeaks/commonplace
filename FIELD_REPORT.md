@@ -28,9 +28,15 @@ A running log of what helped and what got in the way while building this. Everyt
 
 ## First deploy
 
-- [ ] Blueprint validates with `0.5c-512mb` and `0.1c-256mb`
-- [ ] Pre-deploy migration runs, then the boot migration is a no-op
-- [ ] Notification links use `RENDER_EXTERNAL_URL`
-- [ ] Claude Code and Cursor connect with a bearer header
+- [x] Blueprint validates with `0.5c-512mb` and `0.1c-256mb`
+- [x] Pre-deploy migration runs, then the boot migration is a no-op
+- [x] Notification links use `RENDER_EXTERNAL_URL`
+- [ ] Claude Code and Cursor connect with a bearer header (MCP verified over raw HTTP, clients still to do)
 - [ ] Two instances serve MCP traffic without sessions
-- [ ] Time from push to healthy
+- [x] Time from push to healthy: about 30s from build start to live on the first deploy, about 60s for a redeploy
+
+### Found on deploy
+
+6. **A blank `sync: false` var deploys anyway.** I left `ADMIN_EMAIL` empty on the Blueprint screen and everything went green, but the app couldn't create its first admin, so nobody could sign in. The only sign was a log line. There's no way in the spec to mark a `sync: false` value as required. Something like `required: true` would catch it before the first deploy. On my side, the sign-in page should say so too.
+
+7. **A quick second push shows up as "canceled".** I pushed twice within a few seconds, and the first deploy shows as canceled in the dashboard, which looked like a failure at first. It's the right behavior, but saying it was "superseded by a newer commit" would read less like an error.
