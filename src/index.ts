@@ -8,6 +8,11 @@ import { startDispatcher } from './services/notify.js';
 const db = createPool(config.databaseUrl);
 await migrate(db);
 await bootstrap(db, config);
+// The nightly dream runs as a cron job with no public URL of its own and reads this to build links.
+await db.query(
+  `insert into app_settings (key, value) values ('public_url', $1) on conflict (key) do update set value = excluded.value, updated_at = now()`,
+  [config.publicUrl],
+);
 
 const { app } = await createApp(db, { publicUrl: config.publicUrl, oauth: config.oauthEnabled });
 const stopDispatcher = startDispatcher(db, config.notifyWebhookUrl);

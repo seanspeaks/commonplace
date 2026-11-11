@@ -13,6 +13,8 @@
     "start": "node dist/index.js",
     "migrate": "node dist/migrate.js",
     "migrate:dev": "tsx src/migrate.ts",
+    "dream": "node dist/dream.js",
+    "dream:dev": "tsx src/dream.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
     "seed:demo": "tsx scripts/seed-demo.ts"

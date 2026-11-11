@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { actorFromToken } from './auth.js';
 import type { Db } from './db.js';
 import { AppError } from './errors.js';
+import { hooksRouter } from './hooks.js';
 import { buildMcpServer } from './mcp/server.js';
 import { oauthRouter } from './oauth.js';
 import { Knowledge } from './services/knowledge.js';
@@ -30,12 +31,22 @@ export async function createApp(db: Db, opts: { publicUrl: string; oauth?: boole
     res.status(404).json({ error: 'not_found' });
   });
 
+  const bearer = (req: Request) => {
+    const header = req.get('authorization') ?? '';
+    return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  };
+  const authenticate = async (req: Request) => {
+    const token = bearer(req);
+    return token ? actorFromToken(db, token) : null;
+  };
+
+  app.use(hooksRouter(k, authenticate));
+
   // Stateless Streamable HTTP: every request gets a fresh server bound to the caller's identity,
   // so any instance behind Render's load balancer can serve any request.
   app.post('/mcp', express.json({ limit: '2mb' }), async (req, res) => {
-    const header = req.get('authorization') ?? '';
-    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-    const actor = token ? await actorFromToken(db, token) : null;
+    const token = bearer(req);
+    const actor = await authenticate(req);
     if (!actor) {
       const challenge = resourceMetadataUrl
         ? `Bearer resource_metadata="${resourceMetadataUrl}"${token ? ', error="invalid_token"' : ''}`

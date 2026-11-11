@@ -52,7 +52,7 @@ Entity types have property schemas (string, number, boolean, date, url, enum), a
 
 ## Deploy to Render
 
-1. Click **Deploy to Render** above. The Blueprint creates a web service and a private Postgres database.
+1. Click **Deploy to Render** above. The Blueprint creates a web service, a private Postgres database and the nightly dream cron job.
 2. Set `ADMIN_EMAIL`. `ADMIN_TOKEN` is generated for you.
 3. Open the service, copy `ADMIN_TOKEN` from the Environment tab and sign in with it.
 4. Add your team under **Settings**. Each person gets a sign-in token.
@@ -91,11 +91,41 @@ Each approved app shows up under Settings as an agent token named after the app,
 
 It follows the [MCP authorization spec](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization): protected resource metadata, authorization server metadata, dynamic client registration, PKCE (S256 only) and resource indicators. Client secrets and tokens are stored hashed. Plain tokens from Settings keep working alongside it.
 
+### Hooks: context without asking
+
+Agents only check the graph when they think to. [Claude Code hooks](https://code.claude.com/docs/en/hooks) fix that: a short briefing when a session starts (who you are, what's waiting on you, anything matching the project folder), then the entities each prompt is clearly about, with their most trusted facts.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{
+      "type": "http",
+      "url": "https://YOUR-SERVICE.onrender.com/hooks/claude-code",
+      "headers": { "Authorization": "Bearer $COMMONPLACE_TOKEN" },
+      "allowedEnvVars": ["COMMONPLACE_TOKEN"],
+      "timeout": 10
+    }] }],
+    "UserPromptSubmit": [{ "hooks": [{
+      "type": "mcp_tool",
+      "server": "commonplace",
+      "tool": "recall",
+      "input": { "text": "${prompt}" },
+      "timeout": 10
+    }] }]
+  }
+}
+```
+
+The prompt hook calls the `recall` tool through the MCP connection you already set up, so it works with OAuth too. SessionStart has to be HTTP since MCP servers aren't connected yet when it fires. `/hooks/claude-code` also answers `UserPromptSubmit` if you'd rather use one token for both.
+
+Recall stays quiet unless an entity is named in the prompt or matches several of its keywords, so most prompts add nothing. It logs which entities it handed to whom, never the prompt. Other clients get the same thing by calling `recall` at the start of a task, which the server's instructions tell them to do.
+
 ## MCP tools
 
 | Tool | What it does |
 |---|---|
 | `whoami` | Your role, token kind and write ceiling |
+| `recall` | Paste a prompt or task, get back the few entities it's about as plain text. Built for hooks |
 | `get_ontology` | Tiers, domains, entity types and relation types |
 | `search_knowledge` | Full-text and fuzzy search over names, aliases, summaries and facts. Filter by type or trust |
 | `get_entity` | An entity with its facts by tier, links, owner and open requests |
@@ -111,6 +141,30 @@ It follows the [MCP authorization spec](https://modelcontextprotocol.io/specific
 | `withdraw_request` | Pull back one of your requests |
 | `inbox` | Your notifications |
 | `define_entity_type`, `define_relation_type` | Change the ontology (people only) |
+
+## The nightly dream
+
+A cron job that goes over the graph once a night, at 09:00 UTC on Render. It has two halves.
+
+**Always on, no model needed.** It works out which recalled entities people actually used (wrote to or asked about within the hour) and which they ignored, and nudges recall ranking toward the useful ones. It also lists likely duplicates, empty entities, Raw facts nobody has looked at in 30 days and requests that have waited more than a week. That runs in a few seconds.
+
+**Optional, with an inference provider.** Set `DREAM_LLM_BASE_URL`, `DREAM_LLM_MODEL` and `DREAM_LLM_API_KEY` on the cron job (anything OpenAI-compatible: OpenAI, OpenRouter, Together, Groq, a local Ollama...) and it also reads each entity that got new facts that day. For each one it:
+
+- writes a short digest that recall shows next to the facts
+- asks the owner to retract facts a newer fact replaced
+- flags facts that disagree
+- drafts a summary for entities that don't have one
+
+The rules it follows:
+
+- **It proposes, it never applies.** It acts as its own agent with a Raw ceiling, so everything goes to owners as a change request. Nothing changes until someone approves it.
+- **A digest is only as trusted as its weakest source.** Every sentence has to cite facts on that entity. Sentences that cite nothing real are dropped, and the digest is labeled with the tier of the least trusted fact it cites.
+- **Facts are data.** The model is told to ignore instructions inside them, and since its output is only ever a proposal, a poisoned fact can't promote itself.
+- **Every night leaves a record.** One ledger row per run, including failures and nights with no provider, on the **Dream** page with the latest findings.
+
+`DREAM_MAX_ENTITIES` (default 12) and `DREAM_MAX_REQUESTS` (default 10) cap a night. Run it by hand with `npm run dream:dev`, or **Trigger Run** on the cron job in Render.
+
+This leans on a few people's work: the "propose, don't promote" loop and the ledger from rUv's [Dream Machine](https://github.com/ruvnet/dream-machine) and the feedback-tuned retrieval in [AgentDB](https://github.com/ruvnet/agentdb), [sleep-time compute](https://arxiv.org/abs/2504.13171) for doing the work before anyone asks, [authority collapse](https://arxiv.org/abs/2608.01679) for keeping a consolidated memory from claiming more trust than its sources, [TrustMem](https://arxiv.org/abs/2606.25161) for checking every memory update against what it came from, and [MemLACE](https://arxiv.org/abs/2609.03201) for treating supersession and contradiction as first-class.
 
 ## Run it locally
 
@@ -130,7 +184,7 @@ docker compose up -d
 npm test
 ```
 
-The tests run against a real Postgres and create a throwaway database for each file. They cover the policy engine, the request and curation flow, ontology enforcement, search, MCP end to end over HTTP with the SDK client, webhook delivery, the UI's sign-in and request fallback, and the OAuth flow (including the SDK's own OAuth client doing discovery, registration and PKCE against it).
+The tests run against a real Postgres and create a throwaway database for each file. They cover the policy engine, the request and curation flow, ontology enforcement, search, MCP end to end over HTTP with the SDK client, webhook delivery, the UI's sign-in and request fallback, the OAuth flow (including the SDK's own OAuth client doing discovery, registration and PKCE against it), recall and the Claude Code hook endpoint, and the dream with and without a provider. The provider is the one thing faked: a local server that speaks the OpenAI chat API.
 
 ## How it's built
 
@@ -146,7 +200,8 @@ The tests run against a real Postgres and create a throwaway database for each f
 - Hybrid search with `pgvector` embeddings
 - Client ID metadata documents, so clients can skip dynamic registration
 - Ingestion from meeting transcripts, email and tickets as Render Workflows, landing as Raw facts with sources
-- A nightly cron job that flags likely duplicates, orphans and stale facts for review
+- A merge action, so the dream's duplicate findings can become requests too
+- Hook recipes for Cursor, Codex and other agents as they add context hooks
 
 ## License
 

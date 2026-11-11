@@ -27,6 +27,30 @@ services:
       - key: NOTIFY_WEBHOOK_URL
         sync: false
 
+  # The nightly dream. Without an inference provider it learns from recall and lists housekeeping in a few
+  # seconds. Add one to also get digests and change requests for owners to review. Billed per second of runtime.
+  - type: cron
+    name: commonplace-dream
+    runtime: node
+    plan: 0.5c-512mb
+    schedule: "0 9 * * *"
+    buildCommand: npm ci && npm run build
+    startCommand: npm run dream
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: commonplace-db
+          property: connectionString
+      # Optional, any OpenAI-compatible API, e.g. https://api.openai.com/v1 or https://openrouter.ai/api/v1
+      - key: DREAM_LLM_BASE_URL
+        sync: false
+      - key: DREAM_LLM_MODEL
+        sync: false
+      - key: DREAM_LLM_API_KEY
+        sync: false
+
 databases:
   - name: commonplace-db
     plan: 0.1c-256mb

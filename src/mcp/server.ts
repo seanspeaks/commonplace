@@ -4,6 +4,7 @@ import { AppError } from '../errors.js';
 import { ACTIONS, actionSchemas, sourceSchema, tierSchema, type EntityDetail, type Knowledge } from '../services/knowledge.js';
 import { listNotifications, markRead } from '../services/notify.js';
 import { defineEntityType, defineRelationType, getOntology } from '../services/ontology.js';
+import { recall } from '../services/recall.js';
 import type { ActionKey, Actor, TierRank } from '../types.js';
 
 const INSTRUCTIONS = `Commonplace is your team's shared knowledge graph: entities (people, organizations, projects, decisions...) connected by typed relations, with facts ("observations") attached to entities.
@@ -17,7 +18,7 @@ Lower numbers are more trusted. Prefer Canon and Verified facts when answering; 
 
 Every entity has an owner. Your token has a ceiling tier it can write to directly. When a write is refused, do not retry: call request_update with the same change and a short rationale. The owner is pinged and answers with curate_knowledge. Always pass a source describing where knowledge came from.
 
-Before creating an entity, search_knowledge to avoid duplicates. Use get_ontology to see entity types, their properties, and relation types.`;
+At the start of a task, call recall with the task description to pull in what the team already knows about it. Before creating an entity, search_knowledge to avoid duplicates. Use get_ontology to see entity types, their properties, and relation types.`;
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
@@ -109,6 +110,18 @@ export function buildMcpServer(k: Knowledge, actor: Actor): McpServer {
         curates_domains: [...actor.curatedDomainIds].length,
         owns_domains: [...actor.ownedDomainIds].length,
       })),
+  );
+
+  server.registerTool(
+    'recall',
+    {
+      title: 'Recall context',
+      description:
+        'Paste a task, prompt or question and get back the few entities it is clearly about, with their most trusted facts, as plain text. Returns nothing when nothing matches well. Built for hooks that run on every prompt.',
+      inputSchema: { text: z.string().min(1).max(20_000).describe('The prompt, task description or question') },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ text }) => run(async () => (await recall(k, actor, { text, via: 'tool' })).text),
   );
 
   server.registerTool(

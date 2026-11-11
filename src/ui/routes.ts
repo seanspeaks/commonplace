@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { actorFromSession, actorFromToken, createSession, destroySession } from '../auth.js';
+import type { DreamStats } from '../dream/run.js';
 import { AppError } from '../errors.js';
 import { approvePending, denyPending, getPending } from '../oauth.js';
 import { ACTIONS, type EntityDetail, type Knowledge, type RequestListRow } from '../services/knowledge.js';
@@ -81,6 +82,7 @@ export function uiRouter(k: Knowledge): express.Router {
                         <a href="/requests">Requests${c && c.waiting ? html` <span class="badge status-open">${c.waiting}</span>` : ''}</a>
                         <a href="/ontology">Ontology</a>
                         <a href="/activity">Activity</a>
+                        <a href="/dream">Dream</a>
                         <a href="/settings">Settings</a>
                       </nav>
                       <span class="who">${actor.name}${actor.role === 'admin' ? ' · admin' : ''}${c && c.unread ? html` · <a href="/">${c.unread} new</a>` : ''}</span>
@@ -1000,6 +1002,58 @@ export function uiRouter(k: Knowledge): express.Router {
     }),
   );
 
+  r.get(
+    '/dream',
+    wrap(async (req, res) => {
+      const runs = await db.query<{ id: string; started_at: Date; status: string; inference: string; model: string | null; stats: DreamStats; note: string | null }>(
+        'select id, started_at, status, inference, model, stats, note from dream_runs order by started_at desc limit 30',
+      );
+      const latest = runs.rows.find((run) => run.status === 'done');
+      const findings = latest
+        ? await db.query<{ kind: string; detail: string; entity_id: string; entity_name: string }>(
+            `select f.kind, f.detail, e.id as entity_id, e.name as entity_name from dream_findings f join entities e on e.id = f.entity_ids[1]
+             where f.run_id = $1 order by f.kind, f.created_at`,
+            [latest.id],
+          )
+        : { rows: [] };
+      const kinds: Record<string, string> = {
+        contradiction: 'Facts that disagree',
+        duplicate: 'Possible duplicates',
+        stale_request: 'Requests waiting more than a week',
+        aging_raw: 'Raw facts nobody has reviewed in 30 days',
+        orphan: 'Empty entities',
+      };
+      const count = (s: DreamStats) => Object.values(s.findings ?? {}).reduce((a, b) => a + b, 0);
+      await page(
+        res,
+        req.actor,
+        'Dream',
+        html`<h1>Dream</h1>
+          <p class="muted">A nightly pass over the graph. It learns which recalled entities people actually use, and lists housekeeping below. With an inference provider it also writes short digests of busy entities and files change requests for owners to review. It never changes knowledge itself.</p>
+          ${latest
+            ? html`<div class="card"><h2>Last night</h2><p>${latest.note ?? ''}</p><p class="small muted">${timeAgo(latest.started_at)} · inference ${latest.inference}${latest.model ? ` (${latest.model})` : ''}</p></div>`
+            : html`<div class="card"><p>No dream has run yet. On Render it runs as the <code>commonplace-dream</code> cron job. Locally, run <code>npm run dream:dev</code>.</p></div>`}
+          ${Object.entries(kinds).map(([kind, label]) => {
+            const rows = findings.rows.filter((f) => f.kind === kind);
+            return rows.length
+              ? html`<div class="card"><h2>${label} <span class="badge">${rows.length}</span></h2><table>
+                  ${rows.map((f) => html`<tr><td>${entityLink(f.entity_id, f.entity_name)}</td><td>${f.detail}</td></tr>`)}
+                </table></div>`
+              : '';
+          })}
+          ${runs.rows.length
+            ? html`<div class="card"><h2>Ledger</h2><table>
+                <tr><th>When</th><th>Status</th><th>Inference</th><th>Digests</th><th>Requests</th><th>Findings</th><th>Note</th></tr>
+                ${runs.rows.map(
+                  (run) =>
+                    html`<tr><td class="small">${timeAgo(run.started_at)}</td><td>${run.status}</td><td>${run.inference}</td><td>${run.stats.briefs ?? 0}</td><td>${run.stats.requests ?? 0}</td><td>${count(run.stats)}</td><td class="small muted">${run.note ?? ''}</td></tr>`,
+                )}
+              </table></div>`
+            : ''}`,
+      );
+    }),
+  );
+
   // ---------- settings ----------
 
   async function settingsPage(req: Request, res: Response, reveal?: { label: string; token: string }) {
@@ -1030,6 +1084,20 @@ export function uiRouter(k: Knowledge): express.Router {
           <pre>claude mcp add --transport http commonplace ${mcpUrl} --header "Authorization: Bearer ${shown}"</pre>
           <h3>Cursor, VS Code, and other clients</h3>
           <pre>${JSON.stringify({ mcpServers: { commonplace: { url: mcpUrl, headers: { Authorization: `Bearer ${shown}` } } } }, null, 2)}</pre>
+          <h3>Claude Code hooks</h3>
+          <p class="small muted">Optional. Puts relevant knowledge in front of Claude without being asked: a short briefing when a session starts, and matching entities on each prompt. Add to <code>.claude/settings.json</code> and export <code>COMMONPLACE_TOKEN</code>. The prompt hook goes through the MCP server above, so it also works if you signed in with OAuth.</p>
+          <pre>${JSON.stringify(
+            {
+              hooks: {
+                SessionStart: [
+                  { hooks: [{ type: 'http', url: k.link('/hooks/claude-code'), headers: { Authorization: 'Bearer $COMMONPLACE_TOKEN' }, allowedEnvVars: ['COMMONPLACE_TOKEN'], timeout: 10 }] },
+                ],
+                UserPromptSubmit: [{ hooks: [{ type: 'mcp_tool', server: 'commonplace', tool: 'recall', input: { text: '${prompt}' }, timeout: 10 }] }],
+              },
+            },
+            null,
+            2,
+          )}</pre>
         </div>
         <div class="card">
           <h2>Your tokens</h2>
