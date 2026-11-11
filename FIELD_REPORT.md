@@ -55,3 +55,28 @@ Optional MCP auth, on with `OAUTH_ENABLED=true`. It's the MCP SDK's auth router 
 8. **`RENDER_EXTERNAL_URL` is already https.** OAuth issuers have to be https, and the SDK refuses to start otherwise. On Render the issuer came for free with no custom domain and no `PUBLIC_URL` to set, which is a nice thing to point out in the MCP hosting guide.
 
 9. **Blueprint sync picked up a new env var on push.** I added `OAUTH_ENABLED: "true"` to `render.yaml` on a running service and pushed. The sync added the var and the deploy that followed came up with OAuth on, no dashboard step. I didn't expect it to. If the Blueprint docs don't spell it out, they should, since it's how a template ships a new feature flag to everyone who already deployed it.
+
+## Adding recall hooks and a nightly cron
+
+Recall puts what the graph knows in front of an agent on every prompt (a Claude Code hook plus a `recall` tool). The nightly "dream" is a cron job that learns from recall and lists housekeeping, and with an inference provider writes digests and files change requests for owners. It runs fine with no provider at all.
+
+- [x] Cron job created by a Blueprint sync on push, built and ran
+- [x] Triggered by API, ran in about a second with no provider, one ledger row per run
+- [x] Recall and the hook endpoint live, 18 tools over the same endpoint
+- [ ] A night with an inference provider on Render
+
+### Worked well
+
+10. **Adding a cron job was one block of YAML and a push.** The sync created `commonplace-dream`, built it from the same repo and attached the same database with `fromDatabase`. Billing per second suits a job that usually finishes in a second. Later triggered runs started straight away without rebuilding.
+
+### Friction
+
+11. **A new service from a sync doesn't prompt for its `sync: false` vars.** The docs say updates to an existing Blueprint ignore `sync: false`, and that's what happened, but here the cron job itself was brand new. Its three optional inference vars just didn't appear. Fine for optional ones, but a required secret on a new service would fail quietly, which is the same trap as item 6. Prompting for `sync: false` vars on any service the sync creates would cover it.
+
+12. **Cron jobs don't know the web service's public URL.** The dream files change requests whose notifications link back to the UI, and a cron job has no `RENDER_EXTERNAL_URL`. I have the web service write its URL to the database at boot and the cron job read it. `fromService` with `envVarKey: RENDER_EXTERNAL_HOSTNAME` is documented for a service referencing itself; I haven't tried it across services.
+
+13. **No way to read a cron run's result over the API that I found.** `POST /v1/cron-jobs/{id}/runs` triggers a run, but `GET` on the same path returns 405, so I read the outcome from the logs API. A run status endpoint would make "trigger and wait" scriptable, which is how I'd want to test a cron job in CI.
+
+### To check
+
+- Whether `fromService` can pass a web service's `RENDER_EXTERNAL_HOSTNAME` to a cron job. If it can, item 12 is a docs example, not a gap.
