@@ -9,10 +9,12 @@ const db = createPool(config.databaseUrl);
 await migrate(db);
 await bootstrap(db, config);
 
-const { app } = await createApp(db, { publicUrl: config.publicUrl });
+const { app } = await createApp(db, { publicUrl: config.publicUrl, oauth: config.oauthEnabled });
 const stopDispatcher = startDispatcher(db, config.notifyWebhookUrl);
 const server = app.listen(config.port, () => {
-  console.log(`Commonplace listening on :${config.port}. UI at ${config.publicUrl}, MCP at ${config.publicUrl}/mcp`);
+  console.log(
+    `Commonplace listening on :${config.port}. UI at ${config.publicUrl}, MCP at ${config.publicUrl}/mcp, OAuth ${config.oauthEnabled ? 'on' : 'off'}`,
+  );
 });
 
 process.on('SIGTERM', () => {

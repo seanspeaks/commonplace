@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { actorFromSession, actorFromToken, createSession, destroySession } from '../auth.js';
 import { AppError } from '../errors.js';
+import { approvePending, denyPending, getPending } from '../oauth.js';
 import { ACTIONS, type EntityDetail, type Knowledge, type RequestListRow } from '../services/knowledge.js';
 import { listNotifications, markRead } from '../services/notify.js';
 import { createDomain, defineEntityType, defineRelationType, getOntology, setCurator } from '../services/ontology.js';
@@ -29,6 +30,8 @@ function cookies(req: Request): Record<string, string> {
 
 type Body = Record<string, string | undefined>;
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+/** Only same-site paths, so a crafted login link can't bounce someone to another origin. */
+const safeNext = (v?: string) => (v && v.startsWith('/') && !v.startsWith('//') && !v.includes('\\') ? v : '/');
 
 export function uiRouter(k: Knowledge): express.Router {
   const r = express.Router();
@@ -125,29 +128,38 @@ export function uiRouter(k: Knowledge): express.Router {
     next();
   });
 
-  r.get('/login', (req, res) =>
-    page(
+  r.get('/login', (req, res) => {
+    const next = safeNext(str(req.query.next));
+    return page(
       res,
       undefined,
       'Sign in',
       html`<div class="card" style="max-width:460px;margin:40px auto">
         <h1>Sign in</h1>
-        <p class="muted">Paste a personal token. Admins get theirs from ADMIN_TOKEN; everyone else gets one from an admin.</p>
+        <p class="muted">
+          ${next.startsWith('/oauth/') ? 'Sign in to finish connecting your app. ' : ''}Paste a personal token. Admins get theirs from ADMIN_TOKEN; everyone
+          else gets one from an admin.
+        </p>
         <form method="post" action="/login">
+          <input type="hidden" name="next" value="${next}" />
           <label for="token">Token</label>
           <input id="token" type="password" name="token" autocomplete="current-password" required autofocus />
           <p><button>Sign in</button></p>
         </form>
       </div>`,
-    ),
-  );
+    );
+  });
 
   r.post('/login', async (req, res) => {
-    const actor = await actorFromToken(db, str((req.body as Body).token)?.trim() ?? '');
-    if (!actor || actor.tokenKind !== 'human') return back(res, '/login', undefined, 'That token is not valid for signing in. Agent tokens only work over MCP.');
+    const b = req.body as Body;
+    const next = safeNext(str(b.next));
+    const actor = await actorFromToken(db, str(b.token)?.trim() ?? '');
+    if (!actor || actor.tokenKind !== 'human') {
+      return back(res, next === '/' ? '/login' : `/login?next=${encodeURIComponent(next)}`, undefined, 'That token is not valid for signing in. Agent tokens only work over MCP.');
+    }
     const sid = await createSession(db, actor);
     res.cookie(COOKIE, sid, { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: 30 * 86400_000, path: '/' });
-    res.redirect(303, '/');
+    res.redirect(303, next);
   });
 
   r.post('/logout', async (req, res) => {
@@ -158,11 +170,65 @@ export function uiRouter(k: Knowledge): express.Router {
   });
 
   r.use((req, res, next) => {
-    if (!req.actor) return res.redirect(303, '/login');
+    if (!req.actor) return res.redirect(303, req.method === 'GET' && req.originalUrl !== '/' ? `/login?next=${encodeURIComponent(req.originalUrl)}` : '/login');
     next();
   });
 
   const wrap = (fn: (req: Request, res: Response) => Promise<void>) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
+
+  // ---------- OAuth consent ----------
+
+  r.get(
+    '/oauth/consent/:id',
+    wrap(async (req, res) => {
+      res.set('X-Frame-Options', 'DENY').set('Content-Security-Policy', "frame-ancestors 'none'");
+      const pending = await getPending(db, String(req.params.id));
+      if (!pending) {
+        await page(res, req.actor, 'Connection expired', html`<div class="card" style="max-width:560px;margin:40px auto"><h1>This request expired</h1><p>Start the connection again from your app.</p></div>`, { status: 404 });
+        return;
+      }
+      const app = pending.client.client_name ?? 'An MCP client';
+      const target = new URL(pending.redirectUri);
+      const destination = target.host ? `${target.protocol}//${target.host}` : target.protocol;
+      await page(
+        res,
+        req.actor,
+        `Connect ${app}`,
+        html`<div class="card" style="max-width:560px;margin:40px auto">
+          <h1>Connect ${app}?</h1>
+          <p>${app} wants to use Commonplace as you, ${req.actor!.name}. It can read everything you can and write as your agent.</p>
+          <form method="post" action="/oauth/consent/${pending.id}">
+            <label for="ceiling_tier">Highest tier it can write directly</label>
+            <select id="ceiling_tier" name="ceiling_tier">
+              ${([4, 3, 2] as TierRank[]).map((rank) => html`<option value="${rank}" ${rank === 4 ? 'selected' : ''}>${rank} · ${k.tierName(rank)}</option>`)}
+            </select>
+            <p class="small muted">Above that it files a request for an owner or curator, like any agent token. You can revoke it under Settings.</p>
+            <p class="small muted">
+              Approving sends you back to <code>${destination}</code>. Commonplace hasn't verified this app, so only approve a connection you started.
+            </p>
+            <div class="row">
+              <button name="decision" value="approve">Approve</button>
+              <button name="decision" value="deny" class="secondary">Deny</button>
+            </div>
+          </form>
+        </div>`,
+      );
+    }),
+  );
+
+  r.post(
+    '/oauth/consent/:id',
+    wrap(async (req, res) => {
+      const b = req.body as Body;
+      const id = String(req.params.id);
+      try {
+        const target = b.decision === 'approve' ? await approvePending(db, req.actor!, id, Number(b.ceiling_tier)) : await denyPending(db, id);
+        res.redirect(303, target);
+      } catch (err) {
+        await page(res, req.actor, 'Connection failed', html`<div class="card" style="max-width:560px;margin:40px auto"><h1>Couldn't connect</h1><p>${errorText(err)}</p></div>`, { status: 400 });
+      }
+    }),
+  );
 
   // ---------- dashboard ----------
 

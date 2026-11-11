@@ -39,6 +39,8 @@ test('rejects requests without a valid token', async () => {
   const res = await fetch(`${base}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(res.status, 401);
   assert.match(res.headers.get('www-authenticate') ?? '', /Bearer/);
+  assert.doesNotMatch(res.headers.get('www-authenticate') ?? '', /resource_metadata/, 'OAuth is off unless OAUTH_ENABLED is set');
+  assert.equal((await fetch(`${base}/.well-known/oauth-authorization-server`, { redirect: 'manual' })).status, 404);
 });
 
 test('an agent hits the ceiling, files request_update, and the owner curates over MCP', async () => {

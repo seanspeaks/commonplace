@@ -4,10 +4,11 @@ import { actorFromToken } from './auth.js';
 import type { Db } from './db.js';
 import { AppError } from './errors.js';
 import { buildMcpServer } from './mcp/server.js';
+import { oauthRouter } from './oauth.js';
 import { Knowledge } from './services/knowledge.js';
 import { uiRouter } from './ui/routes.js';
 
-export async function createApp(db: Db, opts: { publicUrl: string }) {
+export async function createApp(db: Db, opts: { publicUrl: string; oauth?: boolean }) {
   const k = await Knowledge.create(db, opts.publicUrl);
   const app = express();
   app.disable('x-powered-by');
@@ -18,6 +19,17 @@ export async function createApp(db: Db, opts: { publicUrl: string }) {
     res.json({ ok: true });
   });
 
+  let resourceMetadataUrl: string | undefined;
+  if (opts.oauth) {
+    const oauth = oauthRouter(db, opts.publicUrl);
+    app.use(oauth.router);
+    resourceMetadataUrl = oauth.resourceMetadataUrl;
+  }
+  // Discovery probes must get a plain 404, not the UI's redirect to the sign-in page.
+  app.use('/.well-known', (_req, res) => {
+    res.status(404).json({ error: 'not_found' });
+  });
+
   // Stateless Streamable HTTP: every request gets a fresh server bound to the caller's identity,
   // so any instance behind Render's load balancer can serve any request.
   app.post('/mcp', express.json({ limit: '2mb' }), async (req, res) => {
@@ -25,9 +37,17 @@ export async function createApp(db: Db, opts: { publicUrl: string }) {
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
     const actor = token ? await actorFromToken(db, token) : null;
     if (!actor) {
-      res.set('WWW-Authenticate', 'Bearer realm="commonplace"').status(401).json({
+      const challenge = resourceMetadataUrl
+        ? `Bearer resource_metadata="${resourceMetadataUrl}"${token ? ', error="invalid_token"' : ''}`
+        : 'Bearer realm="commonplace"';
+      res.set('WWW-Authenticate', challenge).status(401).json({
         jsonrpc: '2.0',
-        error: { code: -32001, message: 'Missing or invalid token. Create one under Settings and send it as "Authorization: Bearer <token>".' },
+        error: {
+          code: -32001,
+          message: resourceMetadataUrl
+            ? 'Missing, invalid or expired token. Connect with OAuth, or create a token under Settings and send it as "Authorization: Bearer <token>".'
+            : 'Missing or invalid token. Create one under Settings and send it as "Authorization: Bearer <token>".',
+        },
         id: null,
       });
       return;

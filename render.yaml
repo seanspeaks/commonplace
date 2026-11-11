@@ -19,6 +19,10 @@ services:
       # Sign in with this the first time. Find it under the service's Environment tab.
       - key: ADMIN_TOKEN
         generateValue: true
+      # Lets Claude.ai, ChatGPT and other MCP clients connect with a sign-in and consent page
+      # instead of a pasted token. Set to "false" to only accept tokens from Settings.
+      - key: OAUTH_ENABLED
+        value: "true"
       # Optional: a Slack incoming webhook that receives every owner ping.
       - key: NOTIFY_WEBHOOK_URL
         sync: false

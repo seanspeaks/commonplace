@@ -47,7 +47,15 @@ function toActor(row: ActorRow): Actor {
 }
 
 export async function actorFromToken(db: Queryable, raw: string): Promise<Actor | null> {
-  const { rows } = await db.query<ActorRow>(`${actorSelect} where t.token_hash = $1 and t.revoked_at is null`, [hashToken(raw)]);
+  const hash = hashToken(raw);
+  let { rows } = await db.query<ActorRow>(`${actorSelect} where t.token_hash = $1 and t.revoked_at is null`, [hash]);
+  if (!rows[0] && raw.startsWith('cpa_')) {
+    ({ rows } = await db.query<ActorRow>(
+      `${actorSelect} join oauth_tokens o on o.grant_id = t.id
+       where o.token_hash = $1 and o.kind = 'access' and o.expires_at > now() and t.revoked_at is null`,
+      [hash],
+    ));
+  }
   if (!rows[0]) return null;
   await db.query('update api_tokens set last_used_at = now() where id = $1', [rows[0].token_id]);
   return toActor(rows[0]);

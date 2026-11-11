@@ -83,6 +83,14 @@ For Cursor and other clients that take JSON config:
 
 The server sends instructions to the agent explaining the tiers and when to use `request_update`.
 
+### Or connect with OAuth
+
+With `OAUTH_ENABLED=true` (the Blueprint turns it on) you don't need a token. Add `https://YOUR-SERVICE.onrender.com/mcp` as a custom connector in Claude.ai, ChatGPT, Cursor or anything else that speaks MCP auth. You'll get sent to Commonplace, sign in, and pick the highest tier the app can write directly. Above that it files requests like any other agent.
+
+Each approved app shows up under Settings as an agent token named after the app, so revoking it there disconnects it right away. Access tokens last an hour, refresh tokens rotate, and if an old refresh token ever comes back the whole connection gets revoked.
+
+It follows the [MCP authorization spec](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization): protected resource metadata, authorization server metadata, dynamic client registration, PKCE (S256 only) and resource indicators. Client secrets and tokens are stored hashed. Plain tokens from Settings keep working alongside it.
+
 ## MCP tools
 
 | Tool | What it does |
@@ -122,7 +130,7 @@ docker compose up -d
 npm test
 ```
 
-The tests run against a real Postgres and create a throwaway database for each file. They cover the policy engine, the request and curation flow, ontology enforcement, search, MCP end to end over HTTP with the SDK client, webhook delivery and the UI's sign-in and request fallback.
+The tests run against a real Postgres and create a throwaway database for each file. They cover the policy engine, the request and curation flow, ontology enforcement, search, MCP end to end over HTTP with the SDK client, webhook delivery, the UI's sign-in and request fallback, and the OAuth flow (including the SDK's own OAuth client doing discovery, registration and PKCE against it).
 
 ## How it's built
 
@@ -136,7 +144,7 @@ The tests run against a real Postgres and create a throwaway database for each f
 ## Roadmap
 
 - Hybrid search with `pgvector` embeddings
-- OAuth 2.1 so it works as a custom connector in Claude.ai and Claude Desktop
+- Client ID metadata documents, so clients can skip dynamic registration
 - Ingestion from meeting transcripts, email and tickets as Render Workflows, landing as Raw facts with sources
 - A nightly cron job that flags likely duplicates, orphans and stale facts for review
 
